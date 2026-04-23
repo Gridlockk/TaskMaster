@@ -1,3 +1,6 @@
+#!/usr/bin/env python3
+# -*- coding: utf-8 -*-
+
 # =============================================================================
 # slave.py — Агент на подчинённой машине
 # =============================================================================
@@ -7,9 +10,10 @@
 #   2. Получив MASTER_DISCOVERY → отвечает SLAVE_READY
 #   3. Принимает TCP-соединение от Master → получает скрипт + параметры
 #   4. Запускает subprocess: python <script> <params>
-#   5. Отправляет файл результата обратно Master
-#   6. Параллельно отвечает на heartbeat-пинги
-#   7. Готов к следующей задаче
+#   5. Читает stdout построчно → пересылает PROGRESS-строки Master
+#   6. Отправляет файл результата обратно Master
+#   7. Параллельно отвечает на heartbeat-пинги
+#   8. Готов к следующей задаче
 #
 # Запуск: python slave.py
 # =============================================================================
@@ -70,12 +74,7 @@ logger = logging.getLogger("slave")
 # =============================================================================
 
 def get_local_ip() -> str:
-    """
-    Определить IP-адрес этой машины в локальной сети.
-    Используется для подстановки в имя файла результата.
-    """
     try:
-        # Открываем фиктивное соединение — ОС выбирает правильный интерфейс
         with socket.socket(socket.AF_INET, socket.SOCK_DGRAM) as s:
             s.connect(("8.8.8.8", 80))
             return s.getsockname()[0]
@@ -88,13 +87,6 @@ def get_local_ip() -> str:
 # =============================================================================
 
 class DiscoveryListener(threading.Thread):
-    """
-    Поток, слушающий UDP broadcast от Master.
-    При получении MASTER_DISCOVERY отвечает SLAVE_READY.
-    Работает непрерывно — Slave может быть обнаружен несколько раз
-    (например, если Master перезапускается).
-    """
-
     def __init__(self, local_ip: str):
         super().__init__(daemon=True, name="DiscoveryListener")
         self.local_ip = local_ip
@@ -108,13 +100,10 @@ class DiscoveryListener(threading.Thread):
             try:
                 data, addr = sock.recvfrom(1024)
                 message = data.decode("utf-8").strip()
-
                 if message == DISCOVERY_REQUEST:
                     logger.info("Discovery запрос от Master %s", addr[0])
-                    response = DISCOVERY_RESPONSE.encode("utf-8")
-                    sock.sendto(response, addr)
+                    sock.sendto(DISCOVERY_RESPONSE.encode("utf-8"), addr)
                     logger.info("Отправлен SLAVE_READY → %s", addr[0])
-
             except socket.timeout:
                 continue
             except Exception as e:
@@ -129,12 +118,6 @@ class DiscoveryListener(threading.Thread):
 # =============================================================================
 
 class HeartbeatListener(threading.Thread):
-    """
-    Поток, отвечающий на UDP heartbeat-пинги от Master.
-    Master периодически шлёт PING → Slave отвечает PONG.
-    Если Slave не отвечает — Master помечает его как DEAD.
-    """
-
     def __init__(self):
         super().__init__(daemon=True, name="HeartbeatListener")
         self._stop_event = threading.Event()
@@ -149,12 +132,9 @@ class HeartbeatListener(threading.Thread):
         while not self._stop_event.is_set():
             try:
                 data, addr = sock.recvfrom(1024)
-                message = data.decode("utf-8").strip()
-
-                if message == "PING":
+                if data.decode("utf-8").strip() == "PING":
                     sock.sendto(b"PONG", addr)
                     logger.debug("PONG → %s", addr[0])
-
             except socket.timeout:
                 continue
             except Exception as e:
@@ -171,13 +151,10 @@ class HeartbeatListener(threading.Thread):
 class TaskHandler(threading.Thread):
     """
     Поток обработки одной задачи от Master.
-    Создаётся для каждого входящего TCP-соединения.
 
-    Порядок работы:
-        1. Принять файл скрипта
-        2. Принять строку параметров из заголовка
-        3. Запустить subprocess
-        4. Отправить файл результата обратно
+    Ключевое изменение: subprocess запускается с stdout=PIPE,
+    читается построчно. Строки PROGRESS:<done>/<total> пересылаются
+    Master через send_message(type="progress") прямо во время выполнения.
     """
 
     def __init__(self, conn: socket.socket, master_addr: tuple, local_ip: str):
@@ -208,56 +185,78 @@ class TaskHandler(threading.Thread):
             )
 
             # ------------------------------------------------------------------
-            # Шаг 2: Запустить subprocess
+            # Шаг 2: Подготовить пути
             # ------------------------------------------------------------------
             result_filename = RESULT_FILENAME_TEMPLATE.format(
                 task_id=task_id,
                 slave_ip=self.local_ip.replace(".", "_"),
             )
-            os.makedirs(MASTER_RESULTS_DIR, exist_ok=True)
+            os.makedirs(SLAVE_WORK_DIR, exist_ok=True)
             result_path = os.path.join(SLAVE_WORK_DIR, result_filename)
 
-            # Строка запуска: python script.py -start 0 -end 100
-            cmd = f'python "{script_path}" {params} -result_filename {result_path}'
-            logger.info("Запуск: %s", cmd)
+            # ------------------------------------------------------------------
+            # Шаг 3: Запустить subprocess и читать stdout построчно
+            # ------------------------------------------------------------------
+            cmd = [
+                sys.executable,
+                script_path,
+            ] + params.split() + ["-result_filename", result_path]
 
-            proc = subprocess.run(
+            logger.info("Запуск: %s", " ".join(cmd))
+
+            # Снимаем таймаут на время выполнения — скрипт работает долго
+            self.conn.settimeout(None)
+
+            proc = subprocess.Popen(
                 cmd,
-                shell=True,
-                capture_output=True,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE,
                 text=True,
-                cwd='.',
+                encoding="utf-8",
+                cwd=".",
             )
 
+            stderr_lines = []
+
+            # Читаем stdout построчно в реальном времени
+            for line in proc.stdout:
+                line = line.rstrip("\n")
+                if line.startswith("PROGRESS:"):
+                    # Парсим и пересылаем Master
+                    self._send_progress(task_id, line)
+                else:
+                    logger.info("[subprocess] %s", line)
+
+            # Дождаться завершения и прочитать stderr
+            proc.wait()
+            stderr_output = proc.stderr.read()
+            if stderr_output:
+                for l in stderr_output.splitlines():
+                    stderr_lines.append(l)
+                    logger.warning("[subprocess stderr] %s", l)
+
             if proc.returncode != 0:
-                # Скрипт завершился с ошибкой
-                error_msg = proc.stderr.strip() or f"returncode={proc.returncode}"
+                error_msg = "\n".join(stderr_lines) or f"returncode={proc.returncode}"
                 logger.error("Скрипт завершился с ошибкой: %s", error_msg)
                 error_header = make_error_header(task_id, self.local_ip, error_msg)
                 send_message(self.conn, error_header)
                 return
 
-            logger.info("Скрипт выполнен успешно (stdout: %d символов)", len(proc.stdout))
+            logger.info("Скрипт выполнен успешно")
 
             # ------------------------------------------------------------------
-            # Шаг 3: Найти файл результата
+            # Шаг 4: Проверить и отправить файл результата
             # ------------------------------------------------------------------
-            # Скрипт должен создать файл с именем result_filename в SLAVE_WORK_DIR.
-            # Если файл не создан — отправляем ошибку.
             if not os.path.isfile(result_path):
                 error_msg = (
                     f"Скрипт не создал файл результата: {result_filename}. "
-                    f"Убедитесь, что скрипт сохраняет результат по пути: "
-                    f"./slave_workspace/{result_filename}"
+                    f"Ожидался путь: {result_path}"
                 )
                 logger.error(error_msg)
                 error_header = make_error_header(task_id, self.local_ip, error_msg)
                 send_message(self.conn, error_header)
                 return
 
-            # ------------------------------------------------------------------
-            # Шаг 4: Отправить файл результата
-            # ------------------------------------------------------------------
             result_header = make_result_header(task_id, self.local_ip, "ok")
             send_file(self.conn, result_header, result_path)
             logger.info("Результат отправлен: %s", result_path)
@@ -276,18 +275,39 @@ class TaskHandler(threading.Thread):
             self.conn.close()
             logger.debug("TCP соединение закрыто")
 
+    def _send_progress(self, task_id: str, progress_line: str) -> None:
+        """
+        Отправить прогресс Master по TCP.
+        Формат строки: PROGRESS:<done>/<total>
+        Отправляем заголовок: type="progress", task_id, done, total, slave_ip
+        """
+        try:
+            # Парсим PROGRESS:45/100
+            payload_str = progress_line[len("PROGRESS:"):]
+            done_str, total_str = payload_str.split("/")
+            done  = int(done_str)
+            total = int(total_str)
+            percent = round(done / total * 100, 1) if total > 0 else 0
+
+            header = {
+                "type":     "progress",
+                "task_id":  task_id,
+                "slave_ip": self.local_ip,
+                "done":     done,
+                "total":    total,
+                "percent":  percent,
+            }
+            send_message(self.conn, header)
+            logger.debug("PROGRESS отправлен: %d/%d (%.1f%%)", done, total, percent)
+        except Exception as e:
+            logger.warning("Не удалось отправить прогресс: %s", e)
+
 
 # =============================================================================
 # TCP-сервер — приём задач от Master
 # =============================================================================
 
 class TaskServer(threading.Thread):
-    """
-    Основной TCP-сервер Slave.
-    Принимает входящие соединения от Master и запускает TaskHandler
-    для каждого соединения в отдельном потоке.
-    """
-
     def __init__(self, local_ip: str):
         super().__init__(daemon=True, name="TaskServer")
         self.local_ip = local_ip
@@ -295,7 +315,7 @@ class TaskServer(threading.Thread):
 
     def run(self):
         server_sock = create_tcp_server_socket("", TCP_PORT)
-        server_sock.settimeout(1.0)  # чтобы цикл мог проверять _stop_event
+        server_sock.settimeout(1.0)
         logger.info("TCP Task server запущен (порт %d)", TCP_PORT)
 
         while not self._stop_event.is_set():
@@ -325,12 +345,10 @@ def main():
     logger.info("Slave запущен. IP: %s", local_ip)
     logger.info("=" * 60)
 
-    # Создать рабочую директорию
     os.makedirs(SLAVE_WORK_DIR, exist_ok=True)
 
-    # Запустить все фоновые потоки
-    discovery = DiscoveryListener(local_ip)
-    heartbeat = HeartbeatListener()
+    discovery   = DiscoveryListener(local_ip)
+    heartbeat   = HeartbeatListener()
     task_server = TaskServer(local_ip)
 
     discovery.start()
@@ -339,7 +357,6 @@ def main():
 
     logger.info("Все службы запущены. Ожидание задач...")
 
-    # Главный поток держит процесс живым
     try:
         while True:
             time.sleep(1)

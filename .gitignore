@@ -1,0 +1,24 @@
+# IDE
+.idea/
+.vscode/
+
+# Python
+.venv/
+venv/
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+
+#
+slave/checkpoints/
+slave/master_results/
+slave/slave_workspace/
+
+master/master_results/
+
+# Logs
+*.log
+
+#test
+task.json
