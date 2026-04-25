@@ -83,6 +83,63 @@ def get_local_ip() -> str:
 
 
 # =============================================================================
+# Установка зависимостей
+# =============================================================================
+
+def install_requirements(packages: list[str]) -> None:
+    """
+    Устанавливает pip-пакеты если они ещё не установлены.
+    Вызывается перед запуском каждого скрипта.
+    Пропускает уже установленные пакеты — повторная установка не происходит.
+    """
+    if not packages:
+        return
+
+    import importlib
+    import subprocess as _sp
+
+    # Словарь: pip-имя → имя модуля для проверки через importlib
+    # Добавляйте сюда пакеты у которых имя модуля отличается от pip-имени
+    PIP_TO_MODULE = {
+        "beautifulsoup4": "bs4",
+        "opencv-python": "cv2",
+        "pillow": "PIL",
+        "scikit-learn": "sklearn",
+        "pyyaml": "yaml",
+    }
+
+    to_install = []
+    for package in packages:
+        module_name = PIP_TO_MODULE.get(package.lower(), package)
+        try:
+            importlib.import_module(module_name)
+            logger.debug("Пакет уже установлен: %s", package)
+        except ImportError:
+            to_install.append(package)
+
+    if not to_install:
+        logger.info("Все зависимости уже установлены")
+        return
+
+    logger.info("Устанавливаю зависимости: %s", to_install)
+    for package in to_install:
+        try:
+            result = _sp.run(
+                [sys.executable, "-m", "pip", "install", package],
+                capture_output=True,
+                text=True,
+            )
+            if result.returncode == 0:
+                logger.info("Установлен: %s", package)
+            else:
+                logger.error(
+                    "Ошибка установки %s: %s", package, result.stderr.strip()
+                )
+        except Exception as e:
+            logger.error("Не удалось установить %s: %s", package, e)
+
+
+# =============================================================================
 # Discovery — ответ на UDP broadcast от Master
 # =============================================================================
 
@@ -176,7 +233,8 @@ class TaskHandler(threading.Thread):
             header, script_path = recv_file(self.conn, SLAVE_WORK_DIR)
 
             task_id = header.get("task_id")
-            params  = header.get("params", "")
+            params = header.get("params", "")
+            requirements = header.get("requirements", [])
             script_name = os.path.basename(script_path)
 
             logger.info(
@@ -185,7 +243,14 @@ class TaskHandler(threading.Thread):
             )
 
             # ------------------------------------------------------------------
-            # Шаг 2: Подготовить пути
+            # Шаг 2: Установить зависимости
+            # ------------------------------------------------------------------
+            if requirements:
+                logger.info("Зависимости задачи: %s", requirements)
+            install_requirements(requirements)
+
+            # ------------------------------------------------------------------
+            # Шаг 3: Подготовить пути
             # ------------------------------------------------------------------
             result_filename = RESULT_FILENAME_TEMPLATE.format(
                 task_id=task_id,
@@ -195,12 +260,12 @@ class TaskHandler(threading.Thread):
             result_path = os.path.join(SLAVE_WORK_DIR, result_filename)
 
             # ------------------------------------------------------------------
-            # Шаг 3: Запустить subprocess и читать stdout построчно
+            # Шаг 4: Запустить subprocess и читать stdout построчно
             # ------------------------------------------------------------------
             cmd = [
-                sys.executable,
-                script_path,
-            ] + params.split() + ["-result_filename", result_path]
+                      sys.executable,
+                      script_path,
+                  ] + params.split() + ["-result_filename", result_path]
 
             logger.info("Запуск: %s", " ".join(cmd))
 
@@ -245,7 +310,7 @@ class TaskHandler(threading.Thread):
             logger.info("Скрипт выполнен успешно")
 
             # ------------------------------------------------------------------
-            # Шаг 4: Проверить и отправить файл результата
+            # Шаг 5: Проверить и отправить файл результата
             # ------------------------------------------------------------------
             if not os.path.isfile(result_path):
                 error_msg = (
@@ -285,17 +350,17 @@ class TaskHandler(threading.Thread):
             # Парсим PROGRESS:45/100
             payload_str = progress_line[len("PROGRESS:"):]
             done_str, total_str = payload_str.split("/")
-            done  = int(done_str)
+            done = int(done_str)
             total = int(total_str)
             percent = round(done / total * 100, 1) if total > 0 else 0
 
             header = {
-                "type":     "progress",
-                "task_id":  task_id,
+                "type": "progress",
+                "task_id": task_id,
                 "slave_ip": self.local_ip,
-                "done":     done,
-                "total":    total,
-                "percent":  percent,
+                "done": done,
+                "total": total,
+                "percent": percent,
             }
             send_message(self.conn, header)
             logger.debug("PROGRESS отправлен: %d/%d (%.1f%%)", done, total, percent)
@@ -347,8 +412,8 @@ def main():
 
     os.makedirs(SLAVE_WORK_DIR, exist_ok=True)
 
-    discovery   = DiscoveryListener(local_ip)
-    heartbeat   = HeartbeatListener()
+    discovery = DiscoveryListener(local_ip)
+    heartbeat = HeartbeatListener()
     task_server = TaskServer(local_ip)
 
     discovery.start()

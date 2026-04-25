@@ -87,7 +87,7 @@ class TaskProgressWidget:
         self.slave_label = ttk.Label(self.frame, text=task.slave_ip or "—", width=14)
         self.slave_label.grid(row=0, column=1, sticky="w", padx=(4, 0))
 
-        # Параметры (коротко)
+        # Параметры
         params_short = task.params[:30] + "…" if len(task.params) > 30 else task.params
         ttk.Label(self.frame, text=params_short, width=32, foreground="#555").grid(
             row=0, column=2, sticky="w", padx=(4, 0)
@@ -377,7 +377,6 @@ class MasterGUI:
         self.tasks_count_label = ttk.Label(ctrl, text="Задач: 0", foreground="#555")
         self.tasks_count_label.pack(side=tk.RIGHT, padx=8)
 
-        # Счётчик статусов
         self._progress_summary = ttk.Label(
             bot_frame,
             text="Задач: 0  |  Выполнено: 0  |  В процессе: 0",
@@ -388,7 +387,6 @@ class MasterGUI:
 
         ttk.Separator(bot_frame, orient="horizontal").pack(fill=tk.X, pady=2)
 
-        # Canvas со скроллом для прогресс-баров
         canvas_frame = ttk.Frame(bot_frame)
         canvas_frame.pack(fill=tk.BOTH, expand=True)
 
@@ -416,7 +414,6 @@ class MasterGUI:
             )
         )
 
-        # Заголовок колонок прогресс-баров
         hdr = ttk.Frame(self._progress_inner, padding=(0, 2, 0, 2))
         hdr.grid(row=0, column=0, sticky="ew")
         self._progress_inner.columnconfigure(0, weight=1)
@@ -428,7 +425,6 @@ class MasterGUI:
             row=1, column=0, sticky="ew", padx=8
         )
 
-        # Запустить обновление счётчика
         self._update_progress_summary()
 
     def update_tasks_display(self):
@@ -487,7 +483,6 @@ class MasterGUI:
 
     def _rebuild_progress_tab(self):
         """Пересоздать виджеты прогресса под текущий tasks_dict."""
-        # Удалить старые виджеты (кроме строки 0 — заголовок, строки 1 — сепаратор)
         for widget in self._progress_widgets.values():
             widget.frame.destroy()
         self._progress_widgets.clear()
@@ -711,7 +706,6 @@ class MasterGUI:
         """Вызывается в главном потоке после завершения master.run."""
         self.update_tasks_display()
         self._rebuild_progress_tab()
-        # Финальное обновление всех виджетов прогресса
         for task_id, task in self.tasks_dict.items():
             widget = self._progress_widgets.get(task_id)
             if widget:

@@ -15,6 +15,9 @@
 # ВАЖНО: имя файла результата передаётся через переменную окружения
 #        RESULT_FILENAME, которую устанавливает Slave перед запуском.
 #        Если переменная не задана — скрипт использует fallback-имя.
+#
+# ВАЖНО: REQUIREMENTS содержит названия библиотек которые будут
+#        установлены у slave
 # =============================================================================
 
 import argparse
@@ -39,6 +42,8 @@ RETRY_ATTEMPTS = 5
 RETRY_DELAYS   = [5, 10, 20, 40, 80]        # секунды между попытками
 
 CHECKPOINTS_DIR = "./checkpoints"
+
+REQUIREMENTS = ["requests", "beautifulsoup4"]
 
 
 # =============================================================================
@@ -197,7 +202,6 @@ def main():
 
     with open(result_filename, file_mode, encoding="utf-8") as f:
 
-        # Заголовок пишем только при старте с нуля
         if file_mode == "w":
             f.write(",".join(HEADERS) + ";\n")
 
@@ -213,18 +217,15 @@ def main():
                 print(f"[program.py] КРИТИЧЕСКАЯ ОШИБКА: {e}", flush=True)
                 sys.exit(1)
 
-            # Убираем строку заголовка таблицы (она уже написана один раз)
             data_rows = data[1:] if len(data) > 1 else data
 
-            # Пустой разделитель между годами
             if year > start_year or file_mode == "a":
                 f.write("\n")
 
             result = ";\n".join(format_row(row) for row in data_rows)
             f.write(result)
-            f.flush()  # сбрасываем на диск после каждого года
+            f.flush()
 
-            # Сохранить чекпоинт
             save_checkpoint(result_filename, year)
 
             # Прогресс в stdout — Slave читает эту строку и отправляет Master

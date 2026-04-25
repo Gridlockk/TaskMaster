@@ -32,7 +32,6 @@ import uuid
 import queue
 from typing import Optional, Callable
 
-
 from config import (
     UDP_BROADCAST_PORT,
     TCP_PORT,
@@ -64,6 +63,39 @@ from protocol import (
     create_tcp_client_socket,
     create_udp_broadcast_socket,
 )
+
+
+# =============================================================================
+# Чтение зависимостей из скрипта
+# =============================================================================
+
+def read_requirements(script_path: str) -> list[str]:
+    """
+    Читает переменную REQUIREMENTS из скрипта не импортируя его.
+    Ищет строку вида: REQUIREMENTS = ["requests", "beautifulsoup4"]
+    Возвращает список пакетов или [] если переменная не найдена.
+    """
+    import ast
+    try:
+        with open(script_path, "r", encoding="utf-8") as f:
+            source = f.read()
+        tree = ast.parse(source)
+        for node in ast.walk(tree):
+            if (
+                    isinstance(node, ast.Assign)
+                    and len(node.targets) == 1
+                    and isinstance(node.targets[0], ast.Name)
+                    and node.targets[0].id == "REQUIREMENTS"
+                    and isinstance(node.value, ast.List)
+            ):
+                return [
+                    elt.s for elt in node.value.elts
+                    if isinstance(elt, ast.Constant) and isinstance(elt.value, str)
+                ]
+    except Exception as e:
+        logger.warning("Не удалось прочитать REQUIREMENTS из %s: %s", script_path, e)
+    return []
+
 
 # =============================================================================
 # Логирование
@@ -130,21 +162,21 @@ class TaskInfo:
     """
 
     def __init__(self, task_id: str, slave_ip: str, params: str):
-        self.task_id: str    = task_id
-        self.slave_ip: str   = slave_ip
-        self.params: str     = params
-        self.status: str     = TASK_STATUS_PENDING
+        self.task_id: str = task_id
+        self.slave_ip: str = slave_ip
+        self.params: str = params
+        self.status: str = TASK_STATUS_PENDING
         self.result_path: Optional[str] = None
-        self.error: Optional[str]       = None
+        self.error: Optional[str] = None
 
         # Прогресс (обновляется live)
-        self.done:    int   = 0
-        self.total:   int   = 0
+        self.done: int = 0
+        self.total: int = 0
         self.percent: float = 0.0
 
     def update_progress(self, done: int, total: int, percent: float):
-        self.done    = done
-        self.total   = total
+        self.done = done
+        self.total = total
         self.percent = percent
 
     def __repr__(self):
@@ -251,12 +283,11 @@ class Master:
 
     def __init__(self):
         self.slaves: dict[str, SlaveInfo] = {}
-        self.tasks:  dict[str, TaskInfo]  = {}
+        self.tasks: dict[str, TaskInfo] = {}
         self._watchdog: Optional[Watchdog] = None
         self.free_slaves = queue.Queue()
-        self.task_queue  = queue.Queue()
+        self.task_queue = queue.Queue()
 
-        # Колбэк прогресса — переопределяется из GUI
         self.on_progress: Optional[Callable[[TaskInfo], None]] = None
 
     # ------------------------------------------------------------------
@@ -299,7 +330,7 @@ class Master:
         while not self.task_queue.empty() or active_threads:
             if not self.free_slaves.empty() and not self.task_queue.empty():
                 slave = self.free_slaves.get()
-                task  = self.task_queue.get()
+                task = self.task_queue.get()
                 task.slave_ip = slave.ip
 
                 t = threading.Thread(
@@ -359,7 +390,7 @@ class Master:
         while not self.task_queue.empty() or active_threads:
             if not self.free_slaves.empty() and not self.task_queue.empty():
                 slave = self.free_slaves.get()
-                task  = self.task_queue.get()
+                task = self.task_queue.get()
                 task.slave_ip = slave.ip
 
                 t = threading.Thread(
@@ -386,10 +417,10 @@ class Master:
     # ------------------------------------------------------------------
 
     def _dispatch_with_reassignment(
-        self,
-        slave: SlaveInfo,
-        task: TaskInfo,
-        script_path: str,
+            self,
+            slave: SlaveInfo,
+            task: TaskInfo,
+            script_path: str,
     ) -> None:
         logger.info("Dispatch → %s | task=%s", slave.ip, task.task_id[:8])
         slave.mark_busy(task.task_id)
@@ -400,11 +431,15 @@ class Master:
             conn = create_tcp_client_socket(slave.ip, TCP_PORT, timeout=SOCKET_TIMEOUT_SEC)
             conn.settimeout(SOCKET_TIMEOUT_SEC)
 
+            requirements = read_requirements(script_path)
             task_header = {
-                "type":    "task",
+                "type": "task",
                 "task_id": task.task_id,
-                "params":  task.params,
+                "params": task.params,
+                "requirements": requirements,
             }
+            if requirements:
+                logger.info("Зависимости для задачи %s: %s", task.task_id[:8], requirements)
             send_file(conn, task_header, script_path)
             logger.info("Скрипт отправлен → %s", slave.ip)
 
@@ -421,10 +456,10 @@ class Master:
                     pass
 
     def _receive_result_with_reassignment(
-        self,
-        conn: socket.socket,
-        slave: SlaveInfo,
-        task: TaskInfo,
+            self,
+            conn: socket.socket,
+            slave: SlaveInfo,
+            task: TaskInfo,
     ) -> None:
         """
         Читаем поток сообщений от Slave до получения финального result/error.
@@ -434,7 +469,6 @@ class Master:
           - type="result"   — получаем файл результата, завершаем
           - type="error"    — задача провалилась, переназначаем
         """
-        # Без таймаута — скрипт может работать часами
         conn.settimeout(None)
 
         while True:
@@ -445,8 +479,8 @@ class Master:
             # Прогресс
             # ------------------------------------------------------------------
             if msg_type == "progress":
-                done    = header.get("done",    0)
-                total   = header.get("total",   0)
+                done = header.get("done", 0)
+                total = header.get("total", 0)
                 percent = header.get("percent", 0.0)
                 task.update_progress(done, total, percent)
                 logger.info(
@@ -466,15 +500,15 @@ class Master:
             # ------------------------------------------------------------------
             if msg_type == "result" and header.get("status") == "ok":
                 os.makedirs(MASTER_RESULTS_DIR, exist_ok=True)
-                filename    = header.get("filename", f"{task.task_id}_{slave.ip}.result")
+                filename = header.get("filename", f"{task.task_id}_{slave.ip}.result")
                 result_path = os.path.join(MASTER_RESULTS_DIR, filename)
 
                 with open(result_path, "wb") as f:
                     f.write(payload)
 
-                task.status      = TASK_STATUS_DONE
+                task.status = TASK_STATUS_DONE
                 task.result_path = result_path
-                task.percent     = 100.0
+                task.percent = 100.0
                 slave.mark_free()
                 self.free_slaves.put(slave)
 
@@ -506,14 +540,14 @@ class Master:
 
     def _handle_lost_task(self, slave: SlaveInfo, task: TaskInfo, reason: str) -> None:
         task.status = TASK_STATUS_LOST
-        task.error  = reason
+        task.error = reason
 
         if slave.is_dead:
             logger.warning(
                 "Slave %s мёртвый — возвращаем задачу %s в очередь",
                 slave.ip, task.task_id[:8]
             )
-            task.status   = TASK_STATUS_PENDING
+            task.status = TASK_STATUS_PENDING
             task.slave_ip = ""
             self.task_queue.put(task)
         else:
@@ -525,8 +559,8 @@ class Master:
     # ------------------------------------------------------------------
 
     def _print_report(self):
-        done  = [t for t in self.tasks.values() if t.status == TASK_STATUS_DONE]
-        lost  = [t for t in self.tasks.values() if t.status == TASK_STATUS_LOST]
+        done = [t for t in self.tasks.values() if t.status == TASK_STATUS_DONE]
+        lost = [t for t in self.tasks.values() if t.status == TASK_STATUS_LOST]
         other = [t for t in self.tasks.values()
                  if t.status not in (TASK_STATUS_DONE, TASK_STATUS_LOST)]
 
@@ -564,7 +598,7 @@ if __name__ == "__main__":
 
     slave_ips = list(slaves.keys())
     SCRIPT = "program.py"
-    CHUNK  = 100
+    CHUNK = 100
 
     tasks = []
     for i in range(len(slave_ips)):
