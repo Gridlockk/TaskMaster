@@ -50,7 +50,7 @@ REQUIREMENTS = ["requests", "beautifulsoup4"]
 # Retry
 # =============================================================================
 
-def fetch_year(station: int, year: int) -> list[list[str]]:
+def fetch_year(station: int, year: int) -> list[list[str]] | None:
     """
     Загрузить и распарсить таблицу погоды за один год.
     При сетевой ошибке или пустом ответе повторяет до RETRY_ATTEMPTS раз
@@ -81,6 +81,9 @@ def fetch_year(station: int, year: int) -> list[list[str]]:
 
             if not data:
                 raise ValueError(f"Таблица пустая (год={year})")
+
+            if len(data) <= 1:
+                return None  # только заголовок — данных за год нет
 
             return data  # успех
 
@@ -209,6 +212,9 @@ def main():
         # Основной цикл по годам
         # ------------------------------------------------------------------
         for year in range(start_year, YEAR_END + 1):
+            done  = years_already_done + (year - start_year + 1)
+            total = TOTAL_YEARS
+
             try:
                 data = fetch_year(station, year)
             except RuntimeError as e:
@@ -217,7 +223,13 @@ def main():
                 print(f"[program.py] КРИТИЧЕСКАЯ ОШИБКА: {e}", flush=True)
                 sys.exit(1)
 
-            data_rows = data[1:] if len(data) > 1 else data
+            if data is None:
+                print(f"[program.py] Нет данных за год {year}, пропускаем ({done}/{total})", flush=True)
+                save_checkpoint(result_filename, year)
+                print(f"PROGRESS:{done}/{total}", flush=True)
+                continue
+
+            data_rows = data[1:]
 
             if year > start_year or file_mode == "a":
                 f.write("\n")
@@ -229,8 +241,6 @@ def main():
             save_checkpoint(result_filename, year)
 
             # Прогресс в stdout — Slave читает эту строку и отправляет Master
-            done  = years_already_done + (year - start_year + 1)
-            total = TOTAL_YEARS
             print(f"PROGRESS:{done}/{total}", flush=True)
             print(f"[program.py] Обработан год {year} ({done}/{total})", flush=True)
 
