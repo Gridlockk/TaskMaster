@@ -277,7 +277,7 @@ class TaskHandler(threading.Thread):
                 stdout=subprocess.PIPE,
                 stderr=subprocess.PIPE,
                 text=True,
-                encoding="utf-8",
+                encoding="cp1251",
                 errors="replace",
                 cwd=".",
             )
