@@ -1,3 +1,20 @@
+#!/usr/bin/env python3
+# -*- coding: utf-8 -*-
+
+# =============================================================================
+# master_gui.py — Графический интерфейс для Master-агента
+# =============================================================================
+#
+# Запуск: python master_gui.py
+#
+# Особенности:
+#   - Использование ttk для современного вида
+#   - Вкладки: Слейвы, Задачи, Логи, Результаты
+#   - Обнаружение слейвов (Discovery)
+#   - Создание задач (из CSV/JSON или вручную)
+#   - Запуск распределения задач с прогрессом
+#   - Отображение статуса слейвов и результатов
+# =============================================================================
 
 import sys
 import os
@@ -50,50 +67,50 @@ def configure_gui_logging(log_queue, level=logging.INFO):
 
 class MasterGUI:
     def __init__(self):
-        self.root = tk.Tk()  # Создаёт главное окно программы
-        self.root.title("Master Agent...")  # Устанавливает заголовок окна
-        self.root.geometry("1000x700")  # Размер окна: ширина 1000, высота 700
-        self.root.minsize(900, 600)  # Минимальный размер при изменении
+        self.root = tk.Tk()
+        self.root.title("Master Agent — Управление распределёнными задачами")
+        self.root.geometry("1000x700")
+        self.root.minsize(900, 600)
 
         # Стилизация
-        self.style = ttk.Style()  # Создаёт объект стилей
-        self.style.theme_use('xpnative')  # Выбирает тему оформления
-        self.style.configure('TNotebook.Tab', padding=[10, 5])  # Настройка вкладок
+        self.style = ttk.Style()
+        self.style.theme_use('clam')
+        self.style.configure('TNotebook.Tab', padding=[10, 5])
         self.style.configure('Accent.TButton', foreground='white', background='#2c3e50')
         self.style.map('Accent.TButton', background=[('active', '#1a252f')])
 
         # Переменные
-        self.master = None  # Здесь будет объект Master (управляющий узел)
-        self.running = False  # Флаг: выполняются ли сейчас задачи?
-        self.stop_requested = False  # Флаг: попросили ли остановить?
-        self.log_queue = queue.Queue()  # Очередь для сообщений логов
+        self.master = None
+        self.running = False          # выполняется ли распределение задач
+        self.stop_requested = False   # флаг для прерывания выполнения
+        self.log_queue = queue.Queue()
         configure_gui_logging(self.log_queue, level=logging.INFO)
         self.logger = logging.getLogger("master_gui")
 
         # Данные
-        self.slaves_dict = {}  # Словарь {IP: информация_о_слейве}
-        self.tasks_dict = {}  # Словарь {ID_задачи: информация_о_задаче}
-        self.script_path = tk.StringVar(value="program.py")  # Путь к скрипту
+        self.slaves_dict = {}          # ip -> SlaveInfo
+        self.tasks_dict = {}           # task_id -> TaskInfo
+        self.script_path = tk.StringVar(value="program.py")
         self.tasks_list = []           # список словарей {"params": ...}
 
         # Построение интерфейса
-        self.create_menu()      # Создаёт меню
-        self.create_widgets()    # Создаёт все виджеты
+        self.create_menu()
+        self.create_widgets()
 
         # Запуск опроса очереди логов и обновления статусов
-        self.poll_log_queue()           # Начинает читать логи
-        self.refresh_slaves_display()  # периодическое обновление таблицу слейвов
+        self.poll_log_queue()
+        self.refresh_slaves_display()  # периодическое обновление
 
         # Экземпляр Master создадим при первом discover
         self.master = Master()
 
     def create_menu(self):
-        menubar = tk.Menu(self.root)        # Создаёт панель меню
-        self.root.config(menu=menubar)      # Прикрепляет меню к окну
+        menubar = tk.Menu(self.root)
+        self.root.config(menu=menubar)
 
-        file_menu = tk.Menu(menubar, tearoff=0)     # tearoff=0 - нельзя открепить
-        menubar.add_cascade(label="Файл", menu=file_menu)       # Добавляет пункт в меню
-        file_menu.add_command(label="Очистить логи", command=self.clear_logs)   # command - какая функция выполнится при клике
+        file_menu = tk.Menu(menubar, tearoff=0)
+        menubar.add_cascade(label="Файл", menu=file_menu)
+        file_menu.add_command(label="Очистить логи", command=self.clear_logs)
         file_menu.add_separator()
         file_menu.add_command(label="Выход", command=self.on_closing)
 
@@ -113,15 +130,10 @@ class MasterGUI:
     def create_widgets(self):
         main_frame = ttk.Frame(self.root, padding="10")
         main_frame.pack(fill=tk.BOTH, expand=True)
-        # fill=tk.BOTH - растягивается в обе стороны
-        # expand=True - занимает всё свободное пространство
 
-
-        # Панель с кнопками
+        # Панель управления
         control_frame = ttk.LabelFrame(main_frame, text="Управление", padding="5")
         control_frame.pack(fill=tk.X, pady=(0, 10))
-        # fill=tk.X - растягивается только по горизонтали
-        #0 слева справа ё0 сверху внутренний  отуступ
 
         ttk.Button(control_frame, text="🔍 Обнаружить слейвы", command=self.discover_slaves).pack(side=tk.LEFT, padx=5)
         ttk.Button(control_frame, text="📂 Загрузить задачи", command=self.load_tasks_dialog).pack(side=tk.LEFT, padx=5)
@@ -195,12 +207,8 @@ class MasterGUI:
 
     def refresh_slaves_display(self):
         """Обновляет таблицу слейвов из self.master.slaves."""
-
-        #hasattr проверяет существование атрибута в классе
         if not self.master or not hasattr(self.master, 'slaves'):
             return
-
-         #ОЧИСТКА - удаляем старые данные
         for item in self.slaves_tree.get_children():
             self.slaves_tree.delete(item)
 
@@ -277,8 +285,6 @@ class MasterGUI:
                 task_id[:8], task.slave_ip, task.params, status_display, result_path
             ))
 
-        # Запланировать повторный вызов этого же метода через 2 секунды
-        # Это создаёт бесконечный цикл автоматического обновления таблицы
         self.tasks_count_label.config(text=f"Задач: {len(self.tasks_dict)}")
         self.root.after(2000, self.update_tasks_display)
 

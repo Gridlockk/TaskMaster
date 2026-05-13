@@ -24,6 +24,7 @@ import logging
 import time
 import tkinter as tk
 from tkinter import ttk, scrolledtext, messagebox
+import winreg
 
 # Импортируем компоненты из slave.py
 from slave import (
@@ -111,6 +112,40 @@ class SlaveGUI:
         # Автоматический запуск Slave (можно убрать, если нужно ручное управление)
         self.start_slave()
 
+    def set_autostart(self, enabled: bool):
+        """Добавляет или удаляет slave_gui.py из автозапуска Windows."""
+        key_path = r"Software\Microsoft\Windows\CurrentVersion\Run"
+        app_name = "SlaveAgent"
+        exe_path = f'"{sys.executable}" "{os.path.abspath(__file__)}"'
+
+        try:
+            key = winreg.OpenKey(winreg.HKEY_CURRENT_USER, key_path, 0, winreg.KEY_SET_VALUE)
+            if enabled:
+                winreg.SetValueEx(key, app_name, 0, winreg.REG_SZ, exe_path)
+                self.logger.info("✅ Автозапуск включён: %s", exe_path)
+            else:
+                try:
+                    winreg.DeleteValue(key, app_name)
+                    self.logger.info("🗑 Автозапуск отключён")
+                except FileNotFoundError:
+                    pass
+            winreg.CloseKey(key)
+        except Exception as e:
+            self.logger.error("Ошибка настройки автозапуска: %s", e)
+            self.autostart_var.set(not enabled)  # откатываем галочку
+
+    def check_autostart_state(self) -> bool:
+        """Проверяет, включён ли автозапуск в реестре."""
+        key_path = r"Software\Microsoft\Windows\CurrentVersion\Run"
+        app_name = "SlaveAgent"
+        try:
+            key = winreg.OpenKey(winreg.HKEY_CURRENT_USER, key_path, 0, winreg.KEY_READ)
+            winreg.QueryValueEx(key, app_name)
+            winreg.CloseKey(key)
+            return True
+        except FileNotFoundError:
+            return False
+
     def create_menu(self):
         """Создаёт главное меню."""
         menubar = tk.Menu(self.root)
@@ -166,7 +201,15 @@ class SlaveGUI:
         # Панель управления
         control_frame = ttk.Frame(main_frame)
         control_frame.pack(fill=tk.X, pady=(0, 10))
-
+        # Автозапуск
+        self.autostart_var = tk.BooleanVar(value=self.check_autostart_state())
+        autostart_check = ttk.Checkbutton(
+            control_frame,
+            text="Запускать с системой",
+            variable=self.autostart_var,
+            command=lambda: self.set_autostart(self.autostart_var.get())
+        )
+        autostart_check.pack(side=tk.LEFT, padx=15)
         self.start_button = ttk.Button(control_frame, text="▶ Запустить Slave", command=self.start_slave, width=18)
         self.start_button.pack(side=tk.LEFT, padx=5)
 
